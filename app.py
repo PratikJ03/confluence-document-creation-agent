@@ -121,13 +121,10 @@ with st.sidebar:
             key="auth_email_input",
         )
         if st.button("🔑 Re-authenticate / Connect", key="btn_login", use_container_width=True):
-            auth_mgr.login_with_oauth(
-                access_token="atlassian_oauth_live_token_sample",
-                user_email=email_input,
-                site_url=config.ATLASSIAN_MCP_URL,
-                cloud_id=config.ATLASSIAN_CLOUD_ID,
+            st.info(
+                "Use the Atlassian MCP authentication command in a terminal, then restart this app. "
+                "This UI does not accept or store OAuth access tokens."
             )
-            st.rerun()
 
     st.divider()
     st.caption("Grounded Confluence Document Creator · Model Context Protocol v2")
