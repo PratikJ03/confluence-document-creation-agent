@@ -55,13 +55,27 @@ Key settings:
 - `ATLASSIAN_MCP_URL=https://mcp.atlassian.com/v2/mcp`
 - `OPENSEARCH_ENDPOINT=` (optional; falls back to in-memory store if blank)
 
-### 3. Running the Agent UI
+### 3. Running with Docker (Recommended)
+
+Build and launch the container with Docker Compose:
+```powershell
+cd "I:\AI agent\Document_Creation_agent"
+docker compose up -d
+```
+Access the application at: **`http://localhost:8501`**
+
+To stop the container:
+```powershell
+docker compose down
+```
+
+### 4. Running Locally (Without Docker)
 ```powershell
 cd "I:\AI agent\Document_Creation_agent"
 ..\book-ai-agent\venv\Scripts\streamlit run app.py
 ```
 
-### 4. Running the Automated Tests
+### 5. Running the Automated Tests
 ```powershell
 cd "I:\AI agent\Document_Creation_agent"
 ..\book-ai-agent\venv\Scripts\pytest tests

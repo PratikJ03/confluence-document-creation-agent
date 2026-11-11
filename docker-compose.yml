@@ -1,0 +1,15 @@
+services:
+  document-creation-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: confluence-document-agent
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      # Optional: mount host Atlassian OAuth token cache into container so it stays authenticated
+      - ${USERPROFILE}/.atlassian-mcp-auth:/home/appuser/.atlassian-mcp-auth:ro
+    restart: unless-stopped
+
