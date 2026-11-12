@@ -343,3 +343,103 @@ class ConfluenceMCPClient:
             "url": page_url,
             "status": "published",
         }
+
+    # ── Jira Issue Operations ──────────────────────────────────────────────────
+
+    def create_jira_issue(
+        self,
+        project_key: str,
+        summary: str,
+        description: str,
+        issue_type: str = "Task",
+        priority: str = "Medium",
+        labels: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new issue on the specified Jira project via Atlassian MCP.
+        Uses the official 'createJiraIssue' tool.
+        """
+        if not self.enabled:
+            raise RuntimeError("Atlassian MCP is disabled in configuration.")
+
+        # Mock mode for testing
+        if self._mock_mode:
+            mock_key = f"{project_key}-10{len(self._mock_pages) + 1}"
+            mock_url = f"{config.ATLASSIAN_SITE_URL}/browse/{mock_key}"
+            return {
+                "key": mock_key,
+                "summary": summary,
+                "project_key": project_key,
+                "issue_type": issue_type,
+                "priority": priority,
+                "url": mock_url,
+                "status": "created (mock)",
+            }
+
+        if not self.auth.is_authenticated:
+            raise RuntimeError(
+                "Atlassian is not authenticated. Connect a valid OAuth session before creating Jira issues."
+            )
+
+        cloud_id = config.ATLASSIAN_SITE_URL
+
+        arguments: Dict[str, Any] = {
+            "cloudId": cloud_id,
+            "projectKey": project_key.strip().upper(),
+            "summary": summary.strip(),
+            "issueType": issue_type,
+            "description": description or "",
+            "contentFormat": "markdown",
+            "priority": priority,
+        }
+        if labels:
+            arguments["labels"] = [l.strip() for l in labels if l.strip()]
+
+        logger.info(
+            "Creating Jira issue in project '%s' (%s: '%s') via MCP",
+            project_key,
+            issue_type,
+            summary,
+        )
+
+        try:
+            result = self.call_tool("createJiraIssue", arguments)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "scope" in msg.lower() or "re-authorize" in msg.lower():
+                raise RuntimeError(
+                    "Atlassian MCP requires write scopes for Jira. "
+                    "Please re-authenticate via the sidebar with full write scopes."
+                ) from exc
+            raise RuntimeError(f"Jira issue creation failed: {exc}") from exc
+
+        content_data = self._extract_json_content(result)
+
+        issue_key = (
+            content_data.get("data", {}).get("key")
+            or content_data.get("key")
+            or content_data.get("issueKey")
+        )
+        issue_url = (
+            content_data.get("data", {}).get("url")
+            or content_data.get("url")
+            or content_data.get("self")
+        )
+
+        if not issue_url and issue_key:
+            issue_url = f"{cloud_id}/browse/{issue_key}"
+
+        if not issue_key and not issue_url:
+            logger.warning("MCP response did not contain issue key or URL: %s", result)
+            issue_url = f"{cloud_id}/jira/your-work"
+
+        return {
+            "key": issue_key or "created",
+            "summary": summary,
+            "project_key": project_key,
+            "issue_type": issue_type,
+            "priority": priority,
+            "url": issue_url,
+            "status": "created",
+        }
+

@@ -1,0 +1,27 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+streamlit = ">=1.41.0"
+boto3 = ">=1.35.0"
+botocore = ">=1.35.0"
+openai = ">=1.58.0"
+anthropic = ">=0.42.0"
+google-genai = ">=0.1.1"
+python-dotenv = ">=1.0.1"
+pydantic = ">=2.0.0"
+opensearch-py = ">=2.6.0"
+mcp = ">=1.0.0"
+atlassian-mcp-auth = ">=0.1.0"
+httpx = ">=0.28.0"
+beautifulsoup4 = ">=4.12.0"
+pytest = ">=8.0.0"
+pytest-mock = ">=3.14.0"
+
+[dev-packages]
+pytest = "*"
+
+[requires]
+python_version = "3.12"

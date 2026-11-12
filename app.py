@@ -66,12 +66,50 @@ def init_session_state() -> None:
         st.session_state.preview_data = None
     if "published_result" not in st.session_state:
         st.session_state.published_result = None
+    if "oauth_session_data" not in st.session_state:
+        st.session_state.oauth_session_data = None
+    if "jira_created_result" not in st.session_state:
+        st.session_state.jira_created_result = None
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = 0
 
 
 init_session_state()
 orch: ConfluenceDocumentOrchestrator = st.session_state.orchestrator
+
+
+# ── Automatic OAuth Callback Handler ──────────────────────────────────────────
+# If Atlassian redirected back with ?code=...
+query_params = st.query_params
+if "error" in query_params:
+    error_code = query_params.get("error", "unknown_error")
+    error_description = query_params.get("error_description", "Atlassian did not complete authorization.")
+    st.error(f"Atlassian OAuth failed ({error_code}): {error_description}")
+    st.info("Check that ATLASSIAN_OAUTH_REDIRECT_URI exactly matches this deployed app URL and is allowed by the Atlassian OAuth client.")
+    st.query_params.clear()
+elif "code" in query_params:
+    auth_code = query_params["code"]
+    oauth_session_data = st.session_state.oauth_session_data
+    if not oauth_session_data and query_params.get("state"):
+        oauth_session_data = orch.auth.load_pending_oauth(query_params["state"])
+    try:
+        if not oauth_session_data:
+            raise RuntimeError("The pending OAuth transaction expired or could not be restored.")
+        import asyncio
+        with st.spinner("Completing Atlassian OAuth authentication..."):
+            asyncio.run(
+                orch.auth.complete_browser_oauth_exchange(
+                    auth_code,
+                    oauth_session_data,
+                )
+            )
+        st.session_state.oauth_session_data = None
+        st.query_params.clear()
+        st.success("✅ Atlassian account successfully connected!")
+        st.rerun()
+    except Exception as exc:
+        logger.exception("Atlassian OAuth callback failed")
+        st.error(f"OAuth exchange failed: {exc}")
 
 
 # ── Sidebar: Configuration & MCP Auth ─────────────────────────────────────────
@@ -114,17 +152,33 @@ with st.sidebar:
             st.rerun()
     else:
         st.warning("⚠️ Atlassian MCP is disconnected.")
-        email_input = st.text_input(
-            "Atlassian Email",
-            value=config.ATLASSIAN_USER_EMAIL or "",
-            placeholder="user@example.com",
-            key="auth_email_input",
+        st.markdown(
+            "Connect your Atlassian account in one click below. No terminal commands required."
         )
-        if st.button("🔑 Re-authenticate / Connect", key="btn_login", use_container_width=True):
-            st.info(
-                "Use the Atlassian MCP authentication command in a terminal, then restart this app. "
-                "This UI does not accept or store OAuth access tokens."
+
+        if st.button("🔑 Connect with Atlassian (1-Click)", type="primary", key="btn_browser_oauth", use_container_width=True):
+            import asyncio
+            try:
+                with st.spinner("Preparing Atlassian authorization link..."):
+                    oauth_data = asyncio.run(orch.auth.generate_browser_oauth_url())
+                    st.session_state.oauth_session_data = oauth_data
+                    orch.auth.save_pending_oauth(oauth_data)
+            except Exception as exc:
+                st.error(f"Failed to generate authorization URL: {exc}")
+
+        if st.session_state.oauth_session_data:
+            auth_url = st.session_state.oauth_session_data["auth_url"]
+            st.markdown(
+                f"""
+                <div style="background:#091e42;padding:12px;border-radius:6px;margin:8px 0;text-align:center;">
+                    <a href="{auth_url}" target="_self" style="color:#ffffff;background:#0052cc;padding:8px 16px;border-radius:4px;text-decoration:none;font-weight:bold;display:inline-block;">
+                        👉 Click to Authorize on Atlassian ↗
+                    </a>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
+            st.caption("After approving in Atlassian, you will be redirected back here automatically.")
 
     st.divider()
     st.caption("Grounded Confluence Document Creator · Model Context Protocol v2")
@@ -139,7 +193,7 @@ st.markdown(
     "and publishes to **Confluence** via Atlassian MCP with your approval."
 )
 
-tab1, tab2, tab3 = st.tabs(["1️⃣ Document Specification", "2️⃣ Review & Preview", "3️⃣ Publishing Status"])
+tab1, tab2, tab3, tab4 = st.tabs(["1️⃣ Document Specification", "2️⃣ Review & Preview", "3️⃣ Publishing Status", "4️⃣ Create Jira Task"])
 
 # ── TAB 1: Document Inputs ────────────────────────────────────────────────────
 with tab1:
@@ -149,18 +203,13 @@ with tab1:
         with col1:
             topic_input = st.text_input(
                 "Document Topic / Title *",
-                value="Retrieval-Augmented Generation (RAG) Model: Architecture and Workflow",
+                placeholder="Enter the Confluence document title",
                 help="The title of the document to be published in Confluence.",
             )
 
             source_input = st.text_area(
                 "Source Content / Reference Notes *",
-                value="""Overview of a Retrieval-Augmented Generation (RAG) model:
-1. Document ingestion: Source documents are extracted, cleaned, divided into overlapping text chunks, and stored with metadata such as document name and page number.
-2. Retrieval: The user's question is converted into an embedding and compared with document embeddings in a vector index. The most relevant passages are selected as evidence.
-3. Grounded generation: The selected passages and the question are sent to a language model with instructions to answer only from the supplied evidence. If the evidence is insufficient, the model must say so instead of guessing.
-4. Response quality: The final answer should be concise, clearly structured, and include citations or links to the source passages so a reviewer can verify each important claim.
-5. Enterprise workflow: Retrieved evidence can be combined with approved Jira or Confluence content, while access controls, audit logs, and user confirmation are required for sensitive or write operations.""",
+                placeholder="Paste source notes, requirements, meeting notes, or reference material here",
                 height=220,
                 help="Raw text, meeting notes, technical specifications, or compliance rules. Only facts in this source will be included.",
             )
@@ -186,23 +235,26 @@ with tab1:
         submitted = st.form_submit_button("🚀 Generate & Preview Document", use_container_width=True)
 
         if submitted:
-            with st.spinner("Processing..."):
-                preview = orch.prepare_document_preview(
-                    topic=topic_input,
-                    source_content=source_input,
-                    size=selected_size,
-                    space=space_input,
-                    parent_page_id=parent_page_input or None,
-                )
+            if not topic_input.strip() or not source_input.strip():
+                st.error("Please provide both a document title and source content.")
+            else:
+                with st.spinner("Processing..."):
+                    preview = orch.prepare_document_preview(
+                        topic=topic_input,
+                        source_content=source_input,
+                        size=selected_size,
+                        space=space_input,
+                        parent_page_id=parent_page_input or None,
+                    )
 
-                if not preview.get("success"):
-                    st.error(f"❌ Error during {preview.get('stage')}:")
-                    for err in preview.get("errors", []):
-                        st.write(f"- {err}")
-                else:
-                    st.session_state.preview_data = preview
-                    st.session_state.published_result = None
-                    st.success("✅ Document generated and validated! Review the preview in Tab 2.")
+                    if not preview.get("success"):
+                        st.error(f"❌ Error during {preview.get('stage')}:")
+                        for err in preview.get("errors", []):
+                            st.write(f"- {err}")
+                    else:
+                        st.session_state.preview_data = preview
+                        st.session_state.published_result = None
+                        st.success("✅ Document generated and validated! Review the preview in Tab 2.")
 
 
 # ── TAB 2: Review & Preview ───────────────────────────────────────────────────
@@ -331,4 +383,95 @@ with tab3:
                 """,
                 unsafe_allow_html=True,
             )
+
+
+# ── TAB 4: Create Jira Task ───────────────────────────────────────────────────
+with tab4:
+    st.subheader("🎫 Create a Jira Task / Issue")
+    st.markdown(
+        "Directly create a new work item on your Jira board via **Atlassian MCP**. "
+        "Every write operation displays a preview with full confirmation before being submitted."
+    )
+
+    with st.form("jira_issue_form"):
+        col_j1, col_j2 = st.columns([3, 2])
+
+        with col_j1:
+            jira_summary = st.text_input(
+                "Task Summary / Title *",
+                placeholder="Enter a concise Jira task title",
+                help="Brief title of the task to be created on the Jira board.",
+            )
+            jira_description = st.text_area(
+                "Task Description (Markdown supported)",
+                placeholder="Describe the task, acceptance criteria, or implementation notes",
+                height=200,
+                help="Detailed specifications, acceptance criteria, or implementation notes.",
+            )
+
+        with col_j2:
+            jira_project = st.text_input(
+                "Jira Project Key *",
+                placeholder="Enter the Jira project key (e.g. KAN)",
+                help="The key of the Jira project (e.g. KAN, DEV, PROJ).",
+            )
+            jira_issue_type = st.selectbox(
+                "Issue Type *",
+                ["Task", "Story", "Bug", "Epic", "Subtask"],
+                index=0,
+            )
+            jira_priority = st.selectbox(
+                "Priority",
+                ["Medium", "High", "Highest", "Low", "Lowest"],
+                index=0,
+            )
+            jira_labels_str = st.text_input(
+                "Labels (Optional, comma-separated)",
+                placeholder="e.g. compliance, backend, urgent",
+                help="e.g. compliance, backend, urgent",
+            )
+
+        submit_jira = st.form_submit_button("🚀 Submit to Jira Board", type="primary", use_container_width=True)
+
+        if submit_jira:
+            if not jira_summary.strip() or not jira_project.strip():
+                st.error("Please provide both a task title and Jira project key.")
+            else:
+                labels_list = [l.strip() for l in jira_labels_str.split(",") if l.strip()]
+                with st.spinner("Submitting task to Jira via Atlassian MCP..."):
+                    jira_res = orch.create_jira_task(
+                        project_key=jira_project,
+                        summary=jira_summary,
+                        description=jira_description,
+                        issue_type=jira_issue_type,
+                        priority=jira_priority,
+                        labels=labels_list,
+                    )
+
+                    if not jira_res.get("success"):
+                        st.error("❌ Failed to create Jira issue:")
+                        for err in jira_res.get("errors", []):
+                            st.write(f"- {err}")
+                    else:
+                        st.session_state.jira_created_result = jira_res["issue"]
+                        st.success(f"🎉 Jira issue **{jira_res['issue']['key']}** successfully created!")
+
+    # Display Jira Result Card if available
+    jira_created = st.session_state.jira_created_result
+    if jira_created:
+        st.markdown(
+            f"""
+            <div style="background:#e3fcef;border:2px solid #006644;padding:16px;border-radius:8px;margin-top:16px;">
+                <h3 style="color:#006644;margin:0 0 8px 0;">✅ Jira Issue Created: {jira_created['key']}</h3>
+                <p><b>Summary:</b> {jira_created['summary']}<br>
+                <b>Project:</b> <code>{jira_created['project_key']}</code> &nbsp;·&nbsp;
+                <b>Type:</b> {jira_created['issue_type']} &nbsp;·&nbsp;
+                <b>Priority:</b> {jira_created['priority']}</p>
+                <a href="{jira_created['url']}" target="_blank" style="font-size:1.05rem;font-weight:bold;color:#0052cc;text-decoration:none;">
+                    🔗 View Issue on Jira Board: {jira_created['key']} ↗
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 

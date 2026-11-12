@@ -136,3 +136,40 @@ def validate_document_output(
         "is_valid": len(warnings) == 0,
     }
 
+
+def validate_jira_input(
+    project_key: str,
+    summary: str,
+    issue_type: str = "Task",
+    description: str = "",
+) -> List[str]:
+    """
+    Validate user inputs for Jira issue creation.
+    Returns a list of error strings (empty if valid).
+    """
+    errors: List[str] = []
+
+    clean_project = (project_key or "").strip().upper()
+    if not clean_project:
+        errors.append("Jira project key cannot be empty.")
+    elif not re.match(r"^[A-Z][A-Z0-9_]{1,9}$", clean_project):
+        errors.append(
+            f"Invalid project key '{clean_project}'. Project keys must start with an uppercase letter, "
+            "contain uppercase letters/numbers, and be 2-10 characters (e.g. 'KAN', 'DEV', 'PROJ')."
+        )
+
+    clean_summary = (summary or "").strip()
+    if not clean_summary:
+        errors.append("Task summary / title cannot be empty.")
+    elif len(clean_summary) < 3:
+        errors.append("Task summary must be at least 3 characters long.")
+    elif len(clean_summary) > 255:
+        errors.append("Task summary cannot exceed 255 characters.")
+
+    valid_types = ["Task", "Story", "Bug", "Epic", "Subtask"]
+    if issue_type not in valid_types:
+        errors.append(f"Invalid issue type '{issue_type}'. Choose from: {', '.join(valid_types)}.")
+
+    return errors
+
+

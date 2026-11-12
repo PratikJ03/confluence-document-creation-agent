@@ -12,8 +12,10 @@ Provides:
 from __future__ import annotations
 
 import logging
+import json
 import os
 import sqlite3
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -91,6 +93,46 @@ class AtlassianAuthManager:
         self._last_error: Optional[str] = None
         if auto_load_saved:
             self._load_saved_oauth_token()
+
+    @staticmethod
+    def _pending_oauth_path() -> str:
+        return os.path.join(tempfile.gettempdir(), "document_creation_agent_oauth.json")
+
+    def save_pending_oauth(self, session_data: Dict[str, Any]) -> None:
+        """Persist short-lived PKCE state across a Streamlit redirect."""
+        state = session_data.get("state")
+        if not state:
+            raise ValueError("OAuth session is missing state.")
+        path = self._pending_oauth_path()
+        records: Dict[str, Any] = {}
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    records = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            records = {}
+        now = time.time()
+        records = {key: value for key, value in records.items() if float(value.get("created_at", 0)) > now - 600}
+        records[state] = {"created_at": now, "session": session_data}
+        temp_path = f"{path}.{os.getpid()}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(records, handle)
+        os.replace(temp_path, path)
+
+    def load_pending_oauth(self, state: str) -> Optional[Dict[str, Any]]:
+        """Load and consume a pending PKCE transaction by OAuth state."""
+        path = self._pending_oauth_path()
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                records = json.load(handle)
+            record = records.pop(state, None)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(records, handle)
+            if record and float(record.get("created_at", 0)) > time.time() - 600:
+                return record.get("session")
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+        return None
 
     def _load_saved_oauth_token(self) -> bool:
         """
@@ -258,4 +300,70 @@ class AtlassianAuthManager:
             "expires_in_seconds": max(0, int(self.session.expires_at - time.time())) if self.session.expires_at else None,
             "last_error": self._last_error,
         }
+
+    async def generate_browser_oauth_url(self, redirect_uri: Optional[str] = None) -> Dict[str, str]:
+        """
+        Generate a PKCE OAuth 2.1 authorization URL for 1-click in-browser authentication.
+        Works without requiring the user to run any terminal commands.
+        """
+        from atlassian_mcp_auth import AtlassianMcpAuth
+
+        r_uri = redirect_uri or config.ATLASSIAN_OAUTH_REDIRECT_URI
+        auth_client = AtlassianMcpAuth(
+            mcp_url=config.ATLASSIAN_MCP_URL,
+            mcp_resource_url=config.ATLASSIAN_MCP_URL,
+        )
+        session = await auth_client.begin_authorization(r_uri)
+        return {
+            "auth_url": session.auth_url,
+            "state": session.state,
+            "code_verifier": session.code_verifier,
+            "client_id": session.client_id,
+            "client_secret": session.client_secret or "",
+            "redirect_uri": session.redirect_uri,
+            "token_endpoint": session.token_endpoint,
+            "resource": session.resource,
+            "scopes": session.scopes,
+        }
+
+    async def complete_browser_oauth_exchange(self, code: str, session_data: Dict[str, Any]) -> AtlassianSession:
+        """
+        Exchange the OAuth authorization code returned by the browser for a live session.
+        Automatically saves the token to local storage so subsequent requests remain authenticated.
+        """
+        from atlassian_mcp_auth import AtlassianMcpAuth, AuthorizationSession
+
+        auth_session = AuthorizationSession(
+            auth_url=session_data.get("auth_url", ""),
+            state=session_data.get("state", ""),
+            code_verifier=session_data.get("code_verifier", ""),
+            client_id=session_data.get("client_id", ""),
+            client_secret=session_data.get("client_secret") or None,
+            redirect_uri=session_data.get("redirect_uri", config.ATLASSIAN_OAUTH_REDIRECT_URI),
+            token_endpoint=session_data.get("token_endpoint", "https://auth.atlassian.com/oauth/token"),
+            resource=session_data.get("resource", "https://mcp.atlassian.com/v2/mcp"),
+            scopes=session_data.get("scopes", ""),
+        )
+
+        auth_client = AtlassianMcpAuth(
+            mcp_url=config.ATLASSIAN_MCP_URL,
+            mcp_resource_url=config.ATLASSIAN_MCP_URL,
+        )
+        token_record = await auth_client.exchange_code(code, auth_session)
+
+        # Update in-memory session
+        self.session = AtlassianSession(
+            user_email=config.ATLASSIAN_USER_EMAIL or "authenticated_user",
+            account_id=token_record.cloud_id or config.ATLASSIAN_CLOUD_ID,
+            cloud_id=token_record.cloud_id or config.ATLASSIAN_CLOUD_ID,
+            site_url=config.ATLASSIAN_SITE_URL,
+            access_token=token_record.access_token,
+            refresh_token=token_record.refresh_token,
+            expires_at=token_record.expires_at or 0.0,
+        )
+        self.state = AuthState.AUTHENTICATED
+        self._last_error = None
+        logger.info("Successfully completed 1-click in-browser OAuth login!")
+        return self.session
+
 

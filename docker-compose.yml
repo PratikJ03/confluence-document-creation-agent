@@ -9,7 +9,8 @@ services:
     env_file:
       - .env
     volumes:
-      # Optional: mount host Atlassian OAuth token cache into container so it stays authenticated
-      - ${USERPROFILE}/.atlassian-mcp-auth:/home/appuser/.atlassian-mcp-auth:ro
+      # Mount the Atlassian OAuth token cache read/write because the OAuth
+      # exchange persists access and refresh tokens here.
+      - ${USERPROFILE}/.atlassian-mcp-auth:/home/appuser/.atlassian-mcp-auth
     restart: unless-stopped
 

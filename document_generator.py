@@ -174,3 +174,43 @@ class ConfluenceDocumentOrchestrator:
             "status": "published_and_indexed",
         }
 
+    def create_jira_task(
+        self,
+        project_key: str,
+        summary: str,
+        description: str,
+        issue_type: str = "Task",
+        priority: str = "Medium",
+        labels: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Validate inputs and publish a new Jira issue via Atlassian MCP.
+        """
+        from validators import validate_jira_input
+
+        errors = validate_jira_input(
+            project_key=project_key,
+            summary=summary,
+            issue_type=issue_type,
+            description=description,
+        )
+        if errors:
+            return {
+                "success": False,
+                "errors": errors,
+            }
+
+        res = self.mcp.create_jira_issue(
+            project_key=project_key,
+            summary=summary,
+            description=description,
+            issue_type=issue_type,
+            priority=priority,
+            labels=labels,
+        )
+        return {
+            "success": True,
+            "issue": res,
+        }
+
+
